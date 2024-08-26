@@ -85,34 +85,35 @@ sx126x_hal_status_t sx126x_hal_wakeup(const void *context)
 sx126x_hal_status_t sx126x_hal_write(const void *context, const uint8_t *command, const uint16_t command_length,
                                      const uint8_t *data, const uint16_t data_length)
 {
-
-    uint8_t buf[128];
-    uint8_t index = 0;
-
+    int count = command_length + data_length;
     debugPrintf("sx126x_hal_write()");
-
+    cs_select();
     if (command && command_length > 0)
     {
         for (int i = 0; i < command_length; i++)
         {
-            buf[index] = command[i];
-            index++;
+            while (!spi_is_writable(spi_default))
+            {
+                sleep_us(100);
+            }
+            spi_write_blocking(spi_default, command, command_length);
         }
     }
-    if (data && command_length > 0)
+    if (data && data_length > 0)
     {
         for (int i = 1; i < command_length - 1; i++)
         {
-            buf[index] = data[i];
+            while (!spi_is_writable(spi_default))
+            {
+                sleep_us(100);
+            }
+            spi_write_blocking(spi_default, data, data_length);
         }
     }
-    cs_select();
-    while (!spi_is_writable(spi_default))
-    {
-        sleep_us(100);
-    }
-    spi_write_blocking(spi_default, buf, command_length + data_length);
     cs_deselect();
+    printf("sent: %d\n", count);
+    fflush(stdout);
+    puts("");
     return SX126X_HAL_STATUS_OK;
 }
 
@@ -202,15 +203,17 @@ void doIt(void)
 
     sx126x_set_standby(&spiC, SX126X_STANDBY_CFG_RC);
     sx126x_set_pkt_type(&spiC, SX126X_PKT_TYPE_LORA);
-    sx126x_set_rf_freq(&spiC, 915000000);
+    sx126x_set_rf_freq(&spiC, 914600000);
     sx126x_pa_cfg_params_t pa_cfg;
     pa_cfg.device_sel = 0;       // sx1262
     pa_cfg.hp_max = 0x07;        // max power
     pa_cfg.pa_duty_cycle = 0x04; // by code inspection
     pa_cfg.pa_lut = 0x01;
     sx126x_set_pa_cfg(&spiC, &pa_cfg);
-
-    //   sx126x_set_fs(&spiC);
+    sx126x_set_tx_params(&spiC, 22, SX126X_RAMP_200_US);
+    sx126x_set_buffer_base_address(&spiC, 0, 0);
+    sx126x_set_tx_infinite_preamble(&spiC);
+    sx126x_set_tx(&spiC, 30000);
 
     while (1)
     {
