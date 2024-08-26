@@ -225,6 +225,28 @@ int main()
     doIt();
 }
 
+void printRadioCmdStatus(uint8_t code)
+{
+    switch (code)
+    {
+    case SX126X_STATUS_OK:
+        printf("SX126X_STATUS_OK\n");
+        break;
+    case SX126X_STATUS_UNSUPPORTED_FEATURE:
+        printf("SX126X_STATUS_UNSUPPORTED_FEATURE\n");
+        break;
+    case SX126X_STATUS_UNKNOWN_VALUE:
+        printf("SX126X_STATUS_UNKNOWN_VALUE\n");
+        break;
+    case SX126X_STATUS_ERROR:
+        printf("SX126X_STATUS_ERROR\n");
+        break;
+    default:
+        printf("SX126X_STATUS_CODE not known (default handler)\n");
+        break;
+    }
+}
+
 void doIt(void)
 {
     typedef struct spiContext_t
@@ -249,30 +271,66 @@ void doIt(void)
     initControl();
     sx126x_hal_reset(&spiC);
 
-    sx126x_set_standby(&spiC, SX126X_STANDBY_CFG_RC);
+    sx126x_chip_status_t status;
+    uint8_t s;
+
+    printf("sx126x_set_standby\n");
+    s = sx126x_set_standby(&spiC, SX126X_STANDBY_CFG_RC);
+    printRadioCmdStatus(s);
+
+    printf("sx126x_get_status\n");
+    s = sx126x_get_status(&spiC, &status);
+    printRadioCmdStatus(s);
+
+    printf("\n");
+    printf("sx126x_set_pkt_type\n");
     printf("setting packet type %x\n", SX126X_PKT_TYPE_LORA);
-    sx126x_set_pkt_type(&spiC, SX126X_PKT_TYPE_LORA);
+    s = sx126x_set_pkt_type(&spiC, SX126X_PKT_TYPE_LORA);
+    printRadioCmdStatus(s);
     sx126x_pkt_type_t pType;
     sleep_ms(5);
-    sx126x_get_pkt_type(&spiC, &pType);
+
+    printf("sx126x_get_pkt_type\n");
+    s = sx126x_get_pkt_type(&spiC, &pType);
+    printRadioCmdStatus(s);
     printf("packet type: %d\n", pType);
-    sx126x_set_dio2_as_rf_sw_ctrl(&spiC, true);
-    sx126x_set_rf_freq(&spiC, 914600000);
+
+    s = sx126x_set_rf_freq(&spiC, 915100000);
+    printRadioCmdStatus(s);
+
     sx126x_pa_cfg_params_t pa_cfg;
     pa_cfg.device_sel = 0;       // sx1262
     pa_cfg.hp_max = 0x07;        // max power
     pa_cfg.pa_duty_cycle = 0x04; // by code inspection
     pa_cfg.pa_lut = 0x01;
-    sx126x_set_pa_cfg(&spiC, &pa_cfg);
-    sx126x_set_tx_params(&spiC, 22, SX126X_RAMP_200_US);
-    sx126x_set_buffer_base_address(&spiC, 0, 0);
-    sx126x_set_tx_infinite_preamble(&spiC);
-    sx126x_set_tx(&spiC, 30000);
+    s = sx126x_set_pa_cfg(&spiC, &pa_cfg);
+    printRadioCmdStatus(s);
+
+    s = sx126x_set_tx_params(&spiC, 22, SX126X_RAMP_200_US);
+    printRadioCmdStatus(s);
+
+    s = sx126x_set_buffer_base_address(&spiC, 0, 0);
+    printRadioCmdStatus(s);
+
+    //    s = sx126x_set_tx_infinite_preamble(&spiC);
+    //    printRadioCmdStatus(s);
+
+    char *str = "PING";
+    s = sx126x_write_buffer(&spiC, 0, str, 4);
+    printRadioCmdStatus(s);
+
+    s = sx126x_set_dio2_as_rf_sw_ctrl(&spiC, true);
+    printRadioCmdStatus(s);
+
+    s = sx126x_set_tx(&spiC, 30000);
+    printRadioCmdStatus(s);
+
     while (1)
     {
-        sleep_ms(20000);
+        // s = sx126x_set_tx(&spiC, 30000);
+        // printRadioCmdStatus(s);
+        sleep_ms(100);
     }
-
     while (1)
     {
         // printf("CS: %d\n", PICO_DEFAULT_SPI_CSN_PIN);
