@@ -29,7 +29,7 @@ static inline void cs_select()
     asm volatile("nop \n nop \n nop");
     gpio_put(PICO_DEFAULT_SPI_CSN_PIN, 0); // Active low
     asm volatile("nop \n nop \n nop");
-    sleep_ms(1);
+    // sleep_ms(1);
 }
 
 static inline void cs_deselect()
@@ -37,7 +37,7 @@ static inline void cs_deselect()
     asm volatile("nop \n nop \n nop");
     gpio_put(PICO_DEFAULT_SPI_CSN_PIN, 1);
     asm volatile("nop \n nop \n nop");
-    sleep_ms(1);
+    // sleep_ms(1);
 }
 
 #endif
@@ -86,22 +86,32 @@ sx126x_hal_status_t sx126x_hal_write(const void *context, const uint8_t *command
                                      const uint8_t *data, const uint16_t data_length)
 {
 
+    uint8_t buf[128];
+    uint8_t index = 0;
+
+    debugPrintf("sx126x_hal_write()");
+
+    if (command && command_length > 0)
+    {
+        for (int i = 0; i < command_length; i++)
+        {
+            buf[index] = command[i];
+            index++;
+        }
+    }
+    if (data && command_length > 0)
+    {
+        for (int i = 1; i < command_length - 1; i++)
+        {
+            buf[index] = data[i];
+        }
+    }
     cs_select();
     while (!spi_is_writable(spi_default))
     {
         sleep_us(100);
     }
-    debugPrintf("sx126x_hal_write()");
-    uint8_t buf[128];
-    buf[0] = *command;
-    if (data && command_length > 0)
-    {
-        for (int x = 1; x < command_length - 1; x++)
-        {
-            buf[x] = data[x - 1];
-        }
-    }
-    spi_write_blocking(spi_default, command, 1);
+    spi_write_blocking(spi_default, buf, command_length + data_length);
     cs_deselect();
     return SX126X_HAL_STATUS_OK;
 }
@@ -159,7 +169,6 @@ void doIt(void);
 
 int main()
 {
-    sleep_ms(1000);
     doIt();
 }
 
@@ -192,6 +201,14 @@ void doIt(void)
     initControl();
 
     sx126x_set_standby(&spiC, SX126X_STANDBY_CFG_RC);
+    sx126x_set_pkt_type(&spiC, SX126X_PKT_TYPE_LORA);
+    sx126x_set_rf_freq(&spiC, 915000000);
+    sx126x_pa_cfg_params_t pa_cfg;
+    pa_cfg.device_sel = 0;       // sx1262
+    pa_cfg.hp_max = 0x07;        // max power
+    pa_cfg.pa_duty_cycle = 0x04; // by code inspection
+    pa_cfg.pa_lut = 0x01;
+    sx126x_set_pa_cfg(&spiC, &pa_cfg);
 
     //   sx126x_set_fs(&spiC);
 
