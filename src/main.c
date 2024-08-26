@@ -16,13 +16,6 @@
 #define RADIO_BUSY 26
 #define RADIO_DIO_1 28
 
-void debugPrintf(char *str)
-{
-    printf("%s\n", str);
-    fflush(stdout);
-    puts("");
-}
-
 #ifdef PICO_DEFAULT_SPI_CSN_PIN
 static inline void cs_select()
 {
@@ -67,7 +60,6 @@ static void read_registers(uint8_t reg, uint8_t *buf, uint16_t len)
 
 sx126x_hal_status_t sx126x_hal_reset(const void *context)
 {
-    debugPrintf("sx126x_hal_reset()");
 
     // 8.1 says you only need to strobe low for 10uS but am over-clubbing this
     sleep_ms(10);
@@ -82,36 +74,68 @@ sx126x_hal_status_t sx126x_hal_wakeup(const void *context)
     return SX126X_HAL_STATUS_OK;
 }
 
+void sx126x_wait_on_busy(void)
+{
+    // while (gpio_get(RADIO_BUSY, 1))
+    // {
+    //     // NOP Q: can this be a place we block forever?
+    // }
+}
+
+void sx126x_check_device_ready(void)
+{
+#ifdef ORIG
+    if ((SX126xGetOperatingMode() == MODE_SLEEP) || (SX126xGetOperatingMode() == MODE_RX_DC))
+    {
+        SX126xWakeup();
+        // Switch is turned off when device is in sleep mode and turned on is all other modes
+        SX126xAntSwOn();
+    }
+    SX126xWaitOnBusy();
+#endif
+}
+
 sx126x_hal_status_t sx126x_hal_write(const void *context, const uint8_t *command, const uint16_t command_length,
                                      const uint8_t *data, const uint16_t data_length)
 {
-    int count = command_length + data_length;
-    debugPrintf("sx126x_hal_write()");
+    printf("sx126x_hal_write()\n");
+
+    int count = 0;
+    int max = command_length + data_length;
+    uint8_t tx[256];
+
+    printf("c len: %d - d len: %d - max: %d\n", command_length, data_length, max);
+
+    for (int x = 0; x < command_length; x++)
+    {
+        // printf("[%x] ", command[x]);
+        tx[count] = command[x];
+        count++;
+    }
+    printf("\n");
+    for (int x = 0; x < data_length; x++)
+    {
+        // printf("[%x] ", data[x]);
+        tx[count] = data[x];
+        count++;
+    }
+    printf("\n");
+
     cs_select();
-    if (command && command_length > 0)
+    while (!spi_is_writable(spi_default))
     {
-        for (int i = 0; i < command_length; i++)
-        {
-            while (!spi_is_writable(spi_default))
-            {
-                sleep_us(100);
-            }
-            spi_write_blocking(spi_default, command, command_length);
-        }
+        sleep_us(100);
     }
-    if (data && data_length > 0)
-    {
-        for (int i = 1; i < command_length - 1; i++)
-        {
-            while (!spi_is_writable(spi_default))
-            {
-                sleep_us(100);
-            }
-            spi_write_blocking(spi_default, data, data_length);
-        }
-    }
+
+    count = spi_write_blocking(spi_default, tx, count);
     cs_deselect();
+
     printf("sent: %d\n", count);
+    for (int x = 0; x < count; x++)
+    {
+        printf("[%x] ", tx[x]);
+    }
+    printf("\n");
     fflush(stdout);
     puts("");
     return SX126X_HAL_STATUS_OK;
@@ -120,12 +144,41 @@ sx126x_hal_status_t sx126x_hal_write(const void *context, const uint8_t *command
 sx126x_hal_status_t sx126x_hal_read(const void *context, const uint8_t *command, const uint16_t command_length,
                                     uint8_t *data, const uint16_t data_length)
 {
+    printf("sx126x_hal_read\n");
+    int count = 0;
+
+    printf("c len: %d - d len: %d \n", command_length, data_length);
+
+    for (int x = 0; x < command_length; x++)
+    {
+        printf("[%x] ", command[x]);
+    }
+    printf("\n");
+
+    cs_select();
+    while (!spi_is_writable(spi_default))
+    {
+        sleep_us(100);
+    }
+
+    spi_write_blocking(spi_default, command, command_length);
+    count = spi_write_read_blocking(spi_default, command, data, data_length);
+    cs_deselect();
+
+    printf("read: ");
+    for (int x = 0; x < data_length; x++)
+    {
+        printf("[%x] ", data[x]);
+    }
+    printf("\n");
+    fflush(stdout);
+    puts("");
+
     return SX126X_HAL_STATUS_OK;
 }
 
 void initSPI(void)
 {
-    debugPrintf("initSPI");
 
     spi_init(spi_default, 1000 * 1000);
     gpio_set_function(PICO_DEFAULT_SPI_RX_PIN, GPIO_FUNC_SPI);
@@ -147,7 +200,6 @@ void initSPI(void)
 
 void initControl(void)
 {
-    debugPrintf("initControl");
 
     // RADIO_BUSY is an input
     gpio_init(RADIO_BUSY);
@@ -182,10 +234,6 @@ void doIt(void)
     spiContext spiC;
 
     stdio_init_all();
-#if !defined(spi_default) || !defined(PICO_DEFAULT_SPI_SCK_PIN) || !defined(PICO_DEFAULT_SPI_TX_PIN) || !defined(PICO_DEFAULT_SPI_RX_PIN) || !defined(PICO_DEFAULT_SPI_CSN_PIN)
-#warning spi example requires a board with SPI pins
-    puts("Default SPI pins were not defined");
-#else
 
     printf("RADIO_RESET: %d\n", RADIO_RESET);
     printf("RADIO_MOSI : %d\n", RADIO_MOSI);
@@ -197,12 +245,18 @@ void doIt(void)
     fflush(stdout);
     puts("");
 
-    sx126x_hal_reset(&spiC);
     initSPI();
     initControl();
+    sx126x_hal_reset(&spiC);
 
     sx126x_set_standby(&spiC, SX126X_STANDBY_CFG_RC);
+    printf("setting packet type %x\n", SX126X_PKT_TYPE_LORA);
     sx126x_set_pkt_type(&spiC, SX126X_PKT_TYPE_LORA);
+    sx126x_pkt_type_t pType;
+    sleep_ms(5);
+    sx126x_get_pkt_type(&spiC, &pType);
+    printf("packet type: %d\n", pType);
+    sx126x_set_dio2_as_rf_sw_ctrl(&spiC, true);
     sx126x_set_rf_freq(&spiC, 914600000);
     sx126x_pa_cfg_params_t pa_cfg;
     pa_cfg.device_sel = 0;       // sx1262
@@ -214,6 +268,10 @@ void doIt(void)
     sx126x_set_buffer_base_address(&spiC, 0, 0);
     sx126x_set_tx_infinite_preamble(&spiC);
     sx126x_set_tx(&spiC, 30000);
+    while (1)
+    {
+        sleep_ms(20000);
+    }
 
     while (1)
     {
@@ -225,8 +283,6 @@ void doIt(void)
         // cs_deselect();
         // sleep_ms(20);
     }
-
-#endif
 }
 
 /*
