@@ -6,11 +6,12 @@ include(pico_sdk_import.cmake)
 project(main C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
+file(GLOB_RECURSE SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "src/*.[ch]")
 
 pico_sdk_init()
 
 add_executable(main    
-    src/main.c
+    ${SOURCES}
 )
 
 pico_enable_stdio_usb(main 0)

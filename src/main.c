@@ -1,3 +1,5 @@
+#include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
@@ -6,178 +8,83 @@
 
 #include "sx126x_hal.h"
 #include "sx126x.h"
+#include "pico-ping.h"
 
-#define RADIO_MOSI PICO_DEFAULT_SPI_RX_PIN
-#define RADIO_MISO PICO_DEFAULT_SPI_TX_PIN
-#define RADIO_SCLK PICO_DEFAULT_SPI_SCK_PIN
-#define RADIO_NSS PICO_DEFAULT_SPI_CSN_PIN
+// Define the SX1262 specific registers and commands
+#define SX1262_REG_OP_MODE 0x01
+#define SX1262_CMD_SET_STANDBY 0x80
+#define SX1262_CMD_SET_TX 0x83
+#define SX1262_CMD_SET_RX 0x82
+#define SX1262_CMD_WRITE_BUFFER 0x0E
+#define SX1262_CMD_READ_BUFFER 0x1E
+#define SX1262_CMD_GET_IRQ_STATUS 0x12
+#define SX1262_CMD_CLEAR_IRQ_STATUS 0x02
 
-#define RADIO_RESET 20
-#define RADIO_BUSY 26
-#define RADIO_DIO_1 28
+#define SX1262_IRQ_TX_DONE 0x08
+#define SX1262_IRQ_RX_DONE 0x40
+#define SX1262_IRQ_TIMEOUT 0x20
 
-#ifdef PICO_DEFAULT_SPI_CSN_PIN
-static inline void cs_select()
+// Function prototypes
+void MCU_Init(void);
+void SPI_Init(void);
+void GPIO_Init(void);
+void SX1262_Init(spiContext_s *spiC);
+void SX1262_SendPing(void);
+bool SX1262_CheckForPong(void);
+void SX1262_ClearIrqStatus(void);
+void MCU_Delay(uint16_t ms);
+void printRadioCmdStatus(uint8_t code);
+static inline void cs_select(void);
+static inline void cs_deselect(void);
+
+int main(void)
 {
-    asm volatile("nop \n nop \n nop");
-    gpio_put(PICO_DEFAULT_SPI_CSN_PIN, 0); // Active low
-    asm volatile("nop \n nop \n nop");
-    // sleep_ms(1);
-}
+    spiContext_s spiC;
 
-static inline void cs_deselect()
-{
-    asm volatile("nop \n nop \n nop");
-    gpio_put(PICO_DEFAULT_SPI_CSN_PIN, 1);
-    asm volatile("nop \n nop \n nop");
-    // sleep_ms(1);
-}
+    // Initialize the microcontroller
+    MCU_Init();
 
-#endif
+    SPI_Init();
+    GPIO_Init();
 
-#if defined(spi_default) && defined(PICO_DEFAULT_SPI_CSN_PIN)
-static void write_register(uint8_t reg, uint8_t data)
-{
-    uint8_t buf[2];
-    buf[0] = reg & 0x7f; // remove read bit as this is a write
-    buf[1] = data;
-    cs_select();
-    spi_write_blocking(spi_default, buf, 2);
-    cs_deselect();
-    sleep_ms(10);
-}
+    // Initialize the SX1262
+    SX1262_Init(&spiC);
 
-static void read_registers(uint8_t reg, uint8_t *buf, uint16_t len)
-{
-    cs_select();
-    spi_write_blocking(spi_default, &reg, 1);
-    sleep_ms(10);
-    spi_read_blocking(spi_default, 0, buf, len);
-    cs_deselect();
-    sleep_ms(10);
-}
-#endif
-
-sx126x_hal_status_t sx126x_hal_reset(const void *context)
-{
-
-    // 8.1 says you only need to strobe low for 10uS but am over-clubbing this
-    sleep_ms(10);
-    gpio_put(RADIO_RESET, 0);
-    sleep_ms(10);
-    gpio_put(RADIO_RESET, 1);
-    return SX126X_HAL_STATUS_OK;
-}
-
-sx126x_hal_status_t sx126x_hal_wakeup(const void *context)
-{
-    return SX126X_HAL_STATUS_OK;
-}
-
-void sx126x_wait_on_busy(void)
-{
-    // while (gpio_get(RADIO_BUSY, 1))
-    // {
-    //     // NOP Q: can this be a place we block forever?
-    // }
-}
-
-void sx126x_check_device_ready(void)
-{
-#ifdef ORIG
-    if ((SX126xGetOperatingMode() == MODE_SLEEP) || (SX126xGetOperatingMode() == MODE_RX_DC))
+    while (1)
     {
-        SX126xWakeup();
-        // Switch is turned off when device is in sleep mode and turned on is all other modes
-        SX126xAntSwOn();
+        // Send a ping
+        SX1262_SendPing();
+
+        // Wait for some time (depends on your application)
+        MCU_Delay(1000);
+
+        // Check for a pong response
+        if (SX1262_CheckForPong())
+        {
+            // Pong received, do something
+            printf("Pong received!\n");
+        }
+        else
+        {
+            // No response or timeout
+            printf("No response.\n");
+        }
+
+        // Wait before sending the next ping
+        MCU_Delay(5000);
     }
-    SX126xWaitOnBusy();
-#endif
 }
 
-sx126x_hal_status_t sx126x_hal_write(const void *context, const uint8_t *command, const uint16_t command_length,
-                                     const uint8_t *data, const uint16_t data_length)
+void MCU_Init(void)
 {
-    printf("sx126x_hal_write()\n");
-
-    int count = 0;
-    int max = command_length + data_length;
-    uint8_t tx[256];
-
-    printf("c len: %d - d len: %d - max: %d\n", command_length, data_length, max);
-
-    for (int x = 0; x < command_length; x++)
-    {
-        // printf("[%x] ", command[x]);
-        tx[count] = command[x];
-        count++;
-    }
-    printf("\n");
-    for (int x = 0; x < data_length; x++)
-    {
-        // printf("[%x] ", data[x]);
-        tx[count] = data[x];
-        count++;
-    }
-    printf("\n");
-
-    cs_select();
-    while (!spi_is_writable(spi_default))
-    {
-        sleep_us(100);
-    }
-
-    count = spi_write_blocking(spi_default, tx, count);
-    cs_deselect();
-
-    printf("sent: %d\n", count);
-    for (int x = 0; x < count; x++)
-    {
-        printf("[%x] ", tx[x]);
-    }
-    printf("\n");
-    fflush(stdout);
-    puts("");
-    return SX126X_HAL_STATUS_OK;
 }
 
-sx126x_hal_status_t sx126x_hal_read(const void *context, const uint8_t *command, const uint16_t command_length,
-                                    uint8_t *data, const uint16_t data_length)
+void MCU_Delay(uint16_t ms)
 {
-    printf("sx126x_hal_read\n");
-    int count = 0;
-
-    printf("c len: %d - d len: %d \n", command_length, data_length);
-
-    for (int x = 0; x < command_length; x++)
-    {
-        printf("[%x] ", command[x]);
-    }
-    printf("\n");
-
-    cs_select();
-    while (!spi_is_writable(spi_default))
-    {
-        sleep_us(100);
-    }
-
-    spi_write_blocking(spi_default, command, command_length);
-    count = spi_write_read_blocking(spi_default, command, data, data_length);
-    cs_deselect();
-
-    printf("read: ");
-    for (int x = 0; x < data_length; x++)
-    {
-        printf("[%x] ", data[x]);
-    }
-    printf("\n");
-    fflush(stdout);
-    puts("");
-
-    return SX126X_HAL_STATUS_OK;
+    sleep_ms(ms);
 }
 
-void initSPI(void)
+void SPI_Init(void)
 {
 
     spi_init(spi_default, 1000 * 1000);
@@ -198,63 +105,8 @@ void initSPI(void)
     return;
 }
 
-void initControl(void)
+void SX1262_Init(spiContext_s *spiC)
 {
-
-    // RADIO_BUSY is an input
-    gpio_init(RADIO_BUSY);
-    gpio_set_dir(RADIO_NSS, GPIO_IN);
-
-    // Reset is active-low
-    gpio_init(RADIO_RESET);
-    gpio_set_dir(RADIO_RESET, GPIO_OUT);
-    gpio_put(RADIO_RESET, 1);
-
-    // Chip select NSS is active-low, so we'll initialise it to a driven-high state
-    gpio_init(PICO_DEFAULT_SPI_CSN_PIN);
-    gpio_set_dir(PICO_DEFAULT_SPI_CSN_PIN, GPIO_OUT);
-    gpio_put(PICO_DEFAULT_SPI_CSN_PIN, 1);
-    // Make the CS pin available to picotool
-    // bi_decl(bi_1pin_with_name(PICO_DEFAULT_SPI_CSN_PIN, "SPI CS"));
-}
-
-void doIt(void);
-
-int main()
-{
-    doIt();
-}
-
-void printRadioCmdStatus(uint8_t code)
-{
-    switch (code)
-    {
-    case SX126X_STATUS_OK:
-        printf("SX126X_STATUS_OK\n");
-        break;
-    case SX126X_STATUS_UNSUPPORTED_FEATURE:
-        printf("SX126X_STATUS_UNSUPPORTED_FEATURE\n");
-        break;
-    case SX126X_STATUS_UNKNOWN_VALUE:
-        printf("SX126X_STATUS_UNKNOWN_VALUE\n");
-        break;
-    case SX126X_STATUS_ERROR:
-        printf("SX126X_STATUS_ERROR\n");
-        break;
-    default:
-        printf("SX126X_STATUS_CODE not known (default handler)\n");
-        break;
-    }
-}
-
-void doIt(void)
-{
-    typedef struct spiContext_t
-    {
-        int num;
-    } spiContext;
-    spiContext spiC;
-
     stdio_init_all();
 
     printf("RADIO_RESET: %d\n", RADIO_RESET);
@@ -267,8 +119,10 @@ void doIt(void)
     fflush(stdout);
     puts("");
 
-    initSPI();
-    initControl();
+    // Set the SX1262 to standby mode
+    // uint8_t buffer[2] = {SX1262_CMD_SET_STANDBY, 0x00};
+    // SPI_Transfer(buffer, sizeof(buffer));
+
     sx126x_hal_reset(&spiC);
 
     sx126x_chip_status_t status;
@@ -295,13 +149,13 @@ void doIt(void)
     printRadioCmdStatus(s);
     printf("packet type: %d\n", pType);
 
-    s = sx126x_set_rf_freq(&spiC, 915100000);
+    s = sx126x_set_rf_freq(&spiC, 914200000);
     printRadioCmdStatus(s);
 
     sx126x_pa_cfg_params_t pa_cfg;
     pa_cfg.device_sel = 0;       // sx1262
     pa_cfg.hp_max = 0x07;        // max power
-    pa_cfg.pa_duty_cycle = 0x04; // by code inspection
+    pa_cfg.pa_duty_cycle = 0x04; // per datasheet
     pa_cfg.pa_lut = 0x01;
     s = sx126x_set_pa_cfg(&spiC, &pa_cfg);
     printRadioCmdStatus(s);
@@ -322,46 +176,136 @@ void doIt(void)
     s = sx126x_set_dio2_as_rf_sw_ctrl(&spiC, true);
     printRadioCmdStatus(s);
 
-    s = sx126x_set_tx(&spiC, 30000);
+    sx126x_mod_params_lora_t params;
+    params.bw = SX126X_LORA_BW_250;
+    params.sf = SX126X_LORA_SF7;
+    params.cr = SX126X_LORA_CR_4_6;
+    params.ldro = 0;
+
+    s = sx126x_set_lora_mod_params(&spiC, &params);
     printRadioCmdStatus(s);
 
-    while (1)
-    {
-        // s = sx126x_set_tx(&spiC, 30000);
-        // printRadioCmdStatus(s);
-        sleep_ms(100);
-    }
-    while (1)
-    {
-        // printf("CS: %d\n", PICO_DEFAULT_SPI_CSN_PIN);
-        // fflush(stdout);
-        // puts("");
-        // cs_select();
-        sleep_ms(20);
-        // cs_deselect();
-        // sleep_ms(20);
-    }
+    sx126x_pkt_params_lora_t paramsL;
+    paramsL.header_type = SX126X_LORA_PKT_EXPLICIT;
+    paramsL.crc_is_on = SX126X_GFSK_CRC_OFF;
+    paramsL.invert_iq_is_on = 0;
+    paramsL.pld_len_in_bytes = 255;
+    paramsL.preamble_len_in_symb = 0xFFFF;
+    s = sx126x_set_lora_pkt_params(&spiC, &paramsL);
+
+    s = sx126x_set_tx(&spiC, 30000);
+    printRadioCmdStatus(s);
 }
 
-/*
-14.2 Circuit Configuration for Basic Tx Operation
-This chapter describes the sequence of operations needed to send or receive a frame starting from a power up.
-After power up (battery insertion or hard reset) the chip runs automatically a calibration procedure and goes to STDBY_RC
-mode. This is indicated by a low state on BUSY pin. From this state the steps are:
-1. If not in STDBY_RC mode, then go to this mode with the command SetStandby(...)
-2. Define the protocol (LoRa® or FSK) with the command SetPacketType(...)
-3. Define the RF frequency with the command SetRfFrequency(...)
-4. Define the Power Amplifier configuration with the command SetPaConfig(...)
-5. Define output power and ramping time with the command SetTxParams(...)
-6. Define where the data payload will be stored with the command SetBufferBaseAddress(...)
-7. Send the payload to the data buffer with the command WriteBuffer(...)
-8. Define the modulation parameter according to the chosen protocol with the command SetModulationParams(...)1
-9. Define the frame format to be used with the command SetPacketParams(...)2
-10. Configure DIO and IRQ: use the command SetDioIrqParams(...) to select TxDone IRQ and map this IRQ to a DIO (DIO1,
-DIO2 or DIO3)
-11. Define Sync Word value: use the command WriteReg(...) to write the value of the register via direct register access
-12. Set the circuit in transmitter mode to start transmission with the command SetTx(). Use the parameter to enable
-Timeout
-13. Wait for the IRQ TxDone or Timeout: once the packet has been sent the chip goes automatically to STDBY_RC mode
-14. Clear the IRQ TxDone flag
-*/
+void GPIO_Init()
+{
+    // RADIO_BUSY is an input
+    gpio_init(RADIO_BUSY);
+    gpio_set_dir(RADIO_NSS, GPIO_IN);
+
+    // Reset is active-low
+    gpio_init(RADIO_RESET);
+    gpio_set_dir(RADIO_RESET, GPIO_OUT);
+    gpio_put(RADIO_RESET, 1);
+
+    // Chip select NSS is active-low, so we'll initialise it to a driven-high state
+    gpio_init(PICO_DEFAULT_SPI_CSN_PIN);
+    gpio_set_dir(PICO_DEFAULT_SPI_CSN_PIN, GPIO_OUT);
+    gpio_put(PICO_DEFAULT_SPI_CSN_PIN, 1);
+    // Make the CS pin available to picotool
+    // bi_decl(bi_1pin_with_name(PICO_DEFAULT_SPI_CSN_PIN, "SPI CS"));
+}
+
+static inline void cs_select(void)
+{
+    asm volatile("nop \n nop \n nop");
+    gpio_put(PICO_DEFAULT_SPI_CSN_PIN, 0); // Active low
+    asm volatile("nop \n nop \n nop");
+    // sleep_ms(1);
+}
+
+static inline void cs_deselect(void)
+{
+    asm volatile("nop \n nop \n nop");
+    gpio_put(PICO_DEFAULT_SPI_CSN_PIN, 1);
+    asm volatile("nop \n nop \n nop");
+    // sleep_ms(1);
+}
+
+void SX1262_SendPing(void)
+{
+#ifdef CODE
+    uint8_t pingMessage[] = "PING";
+
+    // Write the ping message to the SX1262's buffer
+    uint8_t cmdBuffer[2 + sizeof(pingMessage)] = {SX1262_CMD_WRITE_BUFFER, 0x00};
+    memcpy(&cmdBuffer[2], pingMessage, sizeof(pingMessage));
+    SPI_Transfer(cmdBuffer, sizeof(cmdBuffer));
+
+    // Set the SX1262 to TX mode
+    uint8_t txCmd[2] = {SX1262_CMD_SET_TX, 0x00};
+    SPI_Transfer(txCmd, sizeof(txCmd));
+#endif
+}
+
+bool SX1262_CheckForPong(void)
+{
+#ifdef CODE
+    uint8_t irqStatus = 0;
+
+    // Read the IRQ status register
+    uint8_t cmdBuffer[2] = {SX1262_CMD_GET_IRQ_STATUS, 0x00};
+    SPI_Transfer(cmdBuffer, sizeof(cmdBuffer));
+    irqStatus = cmdBuffer[1];
+
+    // Clear the IRQ status
+    SX1262_ClearIrqStatus();
+
+    // Check if a RX done IRQ was triggered
+    if (irqStatus & SX1262_IRQ_RX_DONE)
+    {
+        // Read the received message
+        uint8_t rxBuffer[64];
+        uint8_t readCmd[2] = {SX1262_CMD_READ_BUFFER, 0x00};
+        SPI_Transfer(readCmd, sizeof(readCmd));
+        SPI_Transfer(rxBuffer, sizeof(rxBuffer));
+
+        // Check if the received message is "PONG"
+        if (strncmp((char *)rxBuffer, "PONG", 4) == 0)
+        {
+            return true;
+        }
+    }
+#endif
+    return false;
+}
+
+void SX1262_ClearIrqStatus(void)
+{
+#ifdef CODE
+    uint8_t cmdBuffer[2] = {SX1262_CMD_CLEAR_IRQ_STATUS, 0xFF};
+    SPI_Transfer(cmdBuffer, sizeof(cmdBuffer));
+#endif
+}
+
+void printRadioCmdStatus(uint8_t code)
+{
+    switch (code)
+    {
+    case SX126X_STATUS_OK:
+        printf("SX126X_STATUS_OK\n");
+        break;
+    case SX126X_STATUS_UNSUPPORTED_FEATURE:
+        printf("SX126X_STATUS_UNSUPPORTED_FEATURE\n");
+        break;
+    case SX126X_STATUS_UNKNOWN_VALUE:
+        printf("SX126X_STATUS_UNKNOWN_VALUE\n");
+        break;
+    case SX126X_STATUS_ERROR:
+        printf("SX126X_STATUS_ERROR\n");
+        break;
+    default:
+        printf("SX126X_STATUS_CODE not known (default handler)\n");
+        break;
+    }
+}
